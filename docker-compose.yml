@@ -1,0 +1,109 @@
+version: '3.6'
+services:
+  certbot:
+    image: certbot/certbot:arm64v8-latest 
+    container_name: certbot
+    command: certonly --standalone  --agree-tos --non-interactive --email ${EMAIL} -d ${DOMAIN} --config-dir /etc/letsencrypt/config --work-dir /etc/letsencrypt/work --logs-dir /etc/letsencrypt/logs
+    volumes:
+      - ./certbot-storage:/etc/letsencrypt
+
+    ports:
+      - "80:80"
+      - "443:443"
+    user: "1000:1001"
+
+
+  telegraf:
+    image: telegraf:1.24.4
+    container_name: telegraf
+    volumes:
+    - ./telegraf-storage/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    depends_on:
+      - influxdb
+    links:
+      - influxdb
+    environment:
+      - DOCKER_INFLUXDB_INIT_ORG=homeOrg
+      - DOCKER_INFLUXDB_INIT_BUCKET=sensorBucket
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${DOCKER_INFLUXDB_INIT_ADMIN_TOKEN}
+    ports:
+    - '127.0.0.1:8125:8125/udp'
+    user: "1000:1001"
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0.12
+    container_name: mosquitto
+    ports:
+      - "8883:8883"
+      - "8083:8083"
+    #user: "1000"
+    depends_on:
+      - certbot
+    user: "1000:1001"
+    volumes:
+      - ./mosquitto-storage/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto-storage/config/passwordfile:/mosquitto/config/passwordfile
+      - ./mosquitto-storage/log/:/mosquitto/log/
+      - ./mosquitto-storage/data/:/mosquitto/data/
+      - ./certbot-storage/config/live/${DOMAIN}/cert.pem:/mosquitto/config/cert/cert.pem
+      - ./certbot-storage/config/live/${DOMAIN}/chain.pem:/mosquitto/config/cert/chain.pem
+      - ./certbot-storage/config/live/${DOMAIN}/fullchain.pem:/mosquitto/config/cert/fullchain.pem
+      - ./certbot-storage/config/live/${DOMAIN}/privkey.pem:/mosquitto/config/cert/privkey.pem
+    restart: always
+
+
+  nodered:
+    depends_on:
+        - grafana
+    image: nodered/node-red:latest
+    environment:
+        - TZ=Europe/Berlin
+    ports:
+        - "1880:1880"
+    #user: root
+    volumes:
+        - ./nodered-storage:/data
+
+  influxdb:
+    image: influxdb:2.6.0
+    container_name: influxdb
+    depends_on:
+      - certbot
+    user: "1000:1001"
+    ports:
+      - '8086:8086'
+    volumes:
+      - ./influxdb-storage:/var/lib/influxdb2:rw
+      - ./certbot-storage/config/live/${DOMAIN}/fullchain.pem:/etc/letsencrypt/fullchain.pem
+      - ./certbot-storage/config/live/${DOMAIN}/privkey.pem:/etc/letsencrypt/privkey.pem
+      - ./telegraf-storage/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=${DOCKER_INFLUXDB_INIT_USERNAME}
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${DOCKER_INFLUXDB_INIT_PASSWORD}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${DOCKER_INFLUXDB_INIT_ADMIN_TOKEN}
+      - DOCKER_INFLUXDB_INIT_ORG=${ORG}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${BUCKET}
+      - INFLUXD_TLS_CERT=/etc/letsencrypt/fullchain.pem
+      - INFLUXD_TLS_KEY=/etc/letsencrypt/privkey.pem
+    command: influxd run --bolt-path /var/lib/influxdb2/influxd.bolt --engine-path /var/lib/influxdb2/engine --store bolt
+    restart: always
+
+
+  grafana:
+    image: grafana/grafana:8.2.6
+    ports:
+      - '3000:3000'
+    user: "1000"
+    volumes:
+      - ./grafana-storage:/var/lib/grafana
+      - ./grafana-provisioning:/etc/grafana/provisioning
+      - ./grafana-dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - influxdb
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USERNAME}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+
+
